@@ -1,3 +1,4 @@
+import face_recognition
 from api.models import Face, Person, LongRunningJob
 from api.util import logger
 
@@ -32,7 +33,7 @@ def cluster_faces(user):
     vis_all = pca.fit_transform(np.array(face_encodings_all))
     res = []
     for face, vis in zip(faces, vis_all):
-        person_id = face.person.id  #color
+        person_id = face.person.id  # color
         person_name = face.person.name
         person_label_is_inferred = face.person_label_is_inferred
         face_url = face.image.url
@@ -65,72 +66,44 @@ def train_faces(user, job_id):
         lrj.save()
 
     try:
+        persons = Person.objects.exclude(name="unknown")
+        persons_list = []
+        person_face_encodings = []
+        for person in persons:
+            face_encoding = np.frombuffer(bytes.fromhex(person.mean_face_encoding))
+            person_face_encodings.append(face_encoding)
+            persons_list.append(person)
         faces = Face.objects.filter(
             photo__owner=user).prefetch_related('person')
 
-        id2face_unknown = {}
-        id2face_known = {}
-        face_encodings_unknown = []
-        face_encodings_known = []
-        face_encodings_all = []
-
-        for face in faces:
-            face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
-            face_image = face.image.read()
-            face.image.close()
-            face_image_path = face.image_path
-            face_id = face.id
-            face_encodings_all.append(face_encoding)
-            if face.person_label_is_inferred is not False or face.person.name == 'unknown':
-                face_encodings_unknown.append(face_encoding)
-                id2face_unknown[face_id] = {}
-                id2face_unknown[face_id]['encoding'] = face_encoding
-                id2face_unknown[face_id]['image'] = face_image
-                id2face_unknown[face_id]['image_path'] = face_image_path
-                id2face_unknown[face_id]['id'] = face_id
-            else:
-                person_name = face.person.name
-                person_id = face.person.id
-                face_encodings_known.append(face_encoding)
-                id2face_known[face_id] = {}
-                id2face_known[face_id]['encoding'] = face_encoding
-                id2face_known[face_id]['image'] = face_image
-                id2face_known[face_id]['image_path'] = face_image_path
-                id2face_known[face_id]['person_name'] = person_name
-                id2face_known[face_id]['person_id'] = person_id
-        
-        if(len(id2face_known) == 0):
-            logger.warning("No labeled faces found")
+        if len(persons) == 0:
+            logger.info("No labeled faces found")
             lrj.finished = True
             lrj.failed = False
             lrj.finished_at = datetime.datetime.now().replace(tzinfo=pytz.utc)
             lrj.save()
             return True
-        
-        face_encodings_known = np.array(
-            [f['encoding'] for f in id2face_known.values()])
-        person_names_known = np.array(
-            [f['person_name'] for f in id2face_known.values()])
-        logger.info("Before fitting")        
-        clf = MLPClassifier(
-            solver='adam', alpha=1e-5, random_state=1, max_iter=1000).fit(face_encodings_known, person_names_known)
-        logger.info("After fitting")    
-        face_encodings_unknown = np.array(
-            [f['encoding'] for f in id2face_unknown.values()])
 
-        face_ids_unknown = [f['id'] for f in id2face_unknown.values()]
-        pred = clf.predict(face_encodings_unknown)
-        probs = np.max(clf.predict_proba(face_encodings_unknown), 1)
-
-        target_count = len(face_ids_unknown)
-
-        for idx, (face_id, person_name, probability) in enumerate(zip(face_ids_unknown, pred, probs)):
-            person = Person.objects.get(name=person_name)
-            face = Face.objects.get(id=face_id)
-            face.person = person
-            face.person_label_is_inferred = True
-            face.person_label_probability = probability
-            face.save()
+        target_count = len(faces)
+        for idx, face in enumerate(faces):
+            if face.person_label_is_inferred in [True, None]:
+                face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
+                results = face_recognition.face_distance(person_face_encodings, face_encoding)
+                TOLERANCE = 0.5
+                person_idx = np.argmin(results)
+                if results[person_idx] <= TOLERANCE:
+                    person = Person.objects.get(name=persons_list[person_idx].name)
+                    logger.info(person.name)
+                    face.person = person
+                    face.person_label_is_inferred = True
+                    face.person_label_probability = float(results[person_idx])
+                    face.save()
+                else:
+                    person = Person.objects.get(name="unknown")
+                    face.person = person
+                    face.person_label_is_inferred = None
+                    face.person_label_probability = 0
+                    face.save()
 
             lrj.result = {
                 'progress': {

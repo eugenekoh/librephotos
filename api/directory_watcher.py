@@ -18,12 +18,12 @@ def is_valid_media(filebuffer):
     try:
         filetype = magic.from_buffer(filebuffer, mime=True)
         return (
-            "jpeg" in filetype
-            or "png" in filetype
-            or "bmp" in filetype
-            or "gif" in filetype
-            or "heic" in filetype
-            or "heif" in filetype
+                "jpeg" in filetype
+                or "png" in filetype
+                or "bmp" in filetype
+                or "gif" in filetype
+                or "heic" in filetype
+                or "heif" in filetype
         )
     except:
         util.logger.exception("An image throwed an exception")
@@ -37,6 +37,7 @@ def calculate_hash(user, image_path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest() + str(user.id)
 
+
 def should_skip(filepath):
     if not os.getenv('SKIP_PATTERNS'):
         return False
@@ -45,13 +46,15 @@ def should_skip(filepath):
     skip_list = skip_patterns.split(',')
     skip_list = map(str.strip, skip_list)
 
-    res = [ele for ele in skip_list if(ele in filepath)]
+    res = [ele for ele in skip_list if (ele in filepath)]
     return bool(res)
+
 
 if os.name == "Windows":
     def is_hidden(filepath):
         name = os.path.basename(os.path.abspath(filepath))
         return name.startswith(".") or has_hidden_attribute(filepath)
+
 
     def has_hidden_attribute(filepath):
         try:
@@ -107,6 +110,7 @@ def handle_new_image(user, image_path, job_id):
 
                 photo._generate_thumbnail()
                 photo._generate_captions()
+                photo._generate_personality_captions("Descriptive", search=True)
                 photo._extract_date_time_from_exif()
                 photo._extract_gps_from_exif()
                 photo._geolocate_mapbox()

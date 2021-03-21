@@ -1,8 +1,11 @@
+import base64
+import numpy as np
+
 from api.models.photo import Photo
 from api.models.user import User, get_deleted_user
 from django.db import models
 from django.db.models import Prefetch
-
+from api.util import logger
 
 class Person(models.Model):
     KIND_CHOICES = (('USER', 'User Labelled'), ('CLUSTER', 'Cluster ID'),
@@ -17,15 +20,14 @@ class Person(models.Model):
     def __str__(self):
         return "%d" % self.id
 
-    def _update_average_face_encoding(self):
+    def _update_average_face_encoding(self, faces):
         encodings = []
-        faces = self.faces.all()
+        logger.info(faces)
         for face in faces:
-            r = base64.b64decode(face.encoding)
-            encoding = np.frombuffer(r, dtype=np.float64)
+            encoding = np.frombuffer(bytes.fromhex(face.encoding))
             encodings.append(encoding)
         mean_encoding = np.array(encodings).mean(axis=0)
-        self.mean_face_encoding = base64.encodebytes(mean_encoding.tostring())
+        self.mean_face_encoding = mean_encoding.tobytes().hex()
 
     def get_photos(self, owner):
         faces = list(
@@ -33,17 +35,19 @@ class Person(models.Model):
                 Prefetch(
                     'photo',
                     queryset=Photo.objects.exclude(image_hash=None).filter(hidden=False,
-                        owner=owner).order_by('-exif_timestamp').only(
-                            'image_hash', 'exif_timestamp', 'favorited',
-                            'owner__id', 'public',
-                            'hidden').prefetch_related('owner'))))
+                                                                           owner=owner).order_by(
+                        '-exif_timestamp').only(
+                        'image_hash', 'exif_timestamp', 'favorited',
+                        'owner__id', 'public',
+                        'hidden').prefetch_related('owner'))))
 
         photos = [face.photo for face in faces if hasattr(face.photo, 'owner')]
         return photos
 
+
 def get_unknown_person():
     return Person.objects.get_or_create(name='unknown')[0]
 
+
 def get_or_create_person(name):
     return Person.objects.get_or_create(name=name)[0]
-

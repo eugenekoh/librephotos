@@ -123,8 +123,9 @@ def get_search_term_examples(user):
             captions_json={}).prefetch_related('faces__person')
 
     try:
-        samples = random.sample(list(pp.all()), 100)
-    except ValueError:
+        samples = random.sample(list(pp.all()), 20)
+    except Exception as e:
+        logger.info(e)
         return [
             'for people', 'for places', 'for things', 'for time',
             'for file path or file name'

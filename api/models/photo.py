@@ -1,41 +1,45 @@
-
 import hashlib
 import os
 from datetime import datetime
 from io import BytesIO
 
-import magic
-import api.models
-import api.util as util
+import PIL
+import cv2
 import exifread
 import face_recognition
+import magic
 import numpy as np
-import ownphotos.settings
-import PIL
 import pyheif
 import pytz
+import requests
+from PIL import ImageOps
+from django.contrib.postgres.fields import JSONField
 from django.core.cache import cache
+from django.core.files.base import ContentFile
+from django.db import models
+from geopy.geocoders import Nominatim
+
+import api.models
+import api.util as util
+import ownphotos.settings
 from api.exifreader import rotate_image
 from api.im2vec import Im2Vec
 from api.models.user import User, get_deleted_user
 from api.places365.places365 import inference_places365
 from api.util import logger
-from django.contrib.postgres.fields import JSONField
-from django.core.files.base import ContentFile
-from django.db import models
-from geopy.geocoders import Nominatim
-from PIL import ImageOps
 
 
 class VisiblePhotoManager(models.Manager):
     def get_queryset(self):
         return super().get_queryset().filter(hidden=False)
 
+
 class Photo(models.Model):
     image_path = models.CharField(max_length=512, db_index=True)
     image_hash = models.CharField(primary_key=True, max_length=64, null=False)
 
     thumbnail_big = models.ImageField(upload_to='thumbnails_big')
+    bounding_box_image = models.ImageField(upload_to='bounding_box_images')
 
     square_thumbnail = models.ImageField(upload_to='square_thumbnails')
     square_thumbnail_small = models.ImageField(
@@ -67,7 +71,7 @@ class Photo(models.Model):
 
     public = models.BooleanField(default=False, db_index=True)
     encoding = models.TextField(default=None, null=True)
-    
+
     objects = models.Manager()
     visible = VisiblePhotoManager()
 
@@ -78,6 +82,62 @@ class Photo(models.Model):
                 hash_md5.update(chunk)
         self.image_hash = hash_md5.hexdigest() + str(self.owner.id)
         self.save()
+
+    def _generate_personality_captions(self, personality, search=False):
+        image_path = self.thumbnail_big.path
+        try:
+            payload = {'personality': personality}
+            files = [
+                ('image', (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg'))
+            ]
+            response = requests.request("POST", "http://serve:5000/generate_caption", data=payload, files=files).json()
+            if search:
+                self.search_captions += ' ' + response['caption']
+            self.captions_json['pic'] = response
+            self.save()
+            util.logger.info(f"generated {personality} caption : {response['caption']} for {image_path}")
+            return response
+        except Exception as e:
+            util.logger.info(f"could not generate personality caption for {image_path}, exception : {str(e)}")
+            return None
+
+    def _generate_bounding_box_image(self, faces):
+        image_path = self.thumbnail_big.path
+        try:
+            image = cv2.imread(image_path)
+            for face in faces:
+                # Draw a box around the face
+                left = face.location_left
+                right = face.location_right
+                top = face.location_top
+                bottom = face.location_bottom
+
+                cv2.rectangle(image, (left, top), (right, bottom), (0, 0, 255), 5)
+
+                # Draw a label with a name below the face
+                #cv2.rectangle(image, (left, top + 80), (right, top), (0, 0, 255), cv2.FILLED)
+                font = cv2.FONT_HERSHEY_DUPLEX
+                cv2.putText(image, f"{face.person.name}-{face.emotion}", (left + 6, top-30), font, 2.0, (255, 255, 255), 5)
+
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            im_pil = PIL.Image.fromarray(image)
+            im_pil.thumbnail(ownphotos.settings.THUMBNAIL_SIZE_BIG,
+                            PIL.Image.ANTIALIAS)
+            buffer = BytesIO()
+            im_pil.save(buffer, format="JPEG")
+            self.bounding_box_image.delete()
+            self.bounding_box_image.save(
+                self.image_hash + '.jpg',
+                ContentFile(buffer.getvalue()))
+            buffer.close()
+            util.logger.info(
+                'generated bounding box image for image %s. ' %
+                image_path)
+            return True
+        except Exception as e:
+            util.logger.warning(
+                f'could not generate bounding box image for image {image_path}, exception : {e}')
+            return False
 
     def _generate_captions_im2txt(self):
         image_path = self.thumbnail_big.path
@@ -113,8 +173,8 @@ class Photo(models.Model):
             self.captions_json = captions
             if self.search_captions:
                 self.search_captions = self.search_captions + ' , ' + \
-                    ' , '.join(
-                        res_places365['categories'] + [res_places365['environment']])
+                                       ' , '.join(
+                                           res_places365['categories'] + [res_places365['environment']])
             else:
                 self.search_captions = ' , '.join(
                     res_places365['categories'] + [res_places365['environment']])
@@ -129,33 +189,34 @@ class Photo(models.Model):
 
     def isHeic(self):
         try:
-            filetype = magic.from_buffer(open(self.image_path,"rb").read(2048), mime=True)
+            filetype = magic.from_buffer(open(self.image_path, "rb").read(2048), mime=True)
             return 'heic' in filetype or 'heif' in filetype
         except:
             util.logger.exception("An image throwed an exception")
             return False
-    
+
     def get_pil_image(self):
         if self.isHeic():
             heif_file = pyheif.read(self.image_path)
             image = PIL.Image.frombytes(
-                heif_file.mode, 
-                heif_file.size, 
+                heif_file.mode,
+                heif_file.size,
                 heif_file.data,
                 "raw",
                 heif_file.mode,
                 heif_file.stride,
-                )
+            )
         else:
             image = PIL.Image.open(self.image_path)
         image = rotate_image(image)
         if image.mode != 'RGB':
-                image = image.convert('RGB')
+            image = image.convert('RGB')
         return image
 
     def _generate_thumbnail(self):
         image = self.get_pil_image()
-        if not os.path.exists(os.path.join(ownphotos.settings.MEDIA_ROOT,'thumbnails_big', self.image_hash + '.jpg').strip()):            
+        if not os.path.exists(
+                os.path.join(ownphotos.settings.MEDIA_ROOT, 'thumbnails_big', self.image_hash + '.jpg').strip()):
             image.thumbnail(ownphotos.settings.THUMBNAIL_SIZE_BIG,
                             PIL.Image.ANTIALIAS)
             image_io_thumb = BytesIO()
@@ -164,37 +225,39 @@ class Photo(models.Model):
                 self.image_hash + '.jpg',
                 ContentFile(image_io_thumb.getvalue()))
             image_io_thumb.close()
-        #thumbnail already exists, add to photo
+        # thumbnail already exists, add to photo
         else:
-            self.thumbnail_big.name=os.path.join('thumbnails_big', self.image_hash + '.jpg').strip()
+            self.thumbnail_big.name = os.path.join('thumbnails_big', self.image_hash + '.jpg').strip()
 
-        if not os.path.exists(os.path.join(ownphotos.settings.MEDIA_ROOT,'square_thumbnails', self.image_hash + '.jpg').strip()):
+        if not os.path.exists(
+                os.path.join(ownphotos.settings.MEDIA_ROOT, 'square_thumbnails', self.image_hash + '.jpg').strip()):
             square_thumb = ImageOps.fit(image,
                                         ownphotos.settings.THUMBNAIL_SIZE_MEDIUM,
-                                    PIL.Image.ANTIALIAS)
+                                        PIL.Image.ANTIALIAS)
             image_io_square_thumb = BytesIO()
             square_thumb.save(image_io_square_thumb, format="JPEG")
             self.square_thumbnail.save(
                 self.image_hash + '.jpg',
                 ContentFile(image_io_square_thumb.getvalue()))
             image_io_square_thumb.close()
-        #thumbnail already exists, add to photo
+        # thumbnail already exists, add to photo
         else:
-            self.square_thumbnail.name=os.path.join('square_thumbnails', self.image_hash + '.jpg').strip()
+            self.square_thumbnail.name = os.path.join('square_thumbnails', self.image_hash + '.jpg').strip()
 
-        if not os.path.exists(os.path.join(ownphotos.settings.MEDIA_ROOT,'square_thumbnails_small', self.image_hash + '.jpg').strip()):
+        if not os.path.exists(os.path.join(ownphotos.settings.MEDIA_ROOT, 'square_thumbnails_small',
+                                           self.image_hash + '.jpg').strip()):
             square_thumb = ImageOps.fit(image,
-                                    ownphotos.settings.THUMBNAIL_SIZE_SMALL,
-                                    PIL.Image.ANTIALIAS)
+                                        ownphotos.settings.THUMBNAIL_SIZE_SMALL,
+                                        PIL.Image.ANTIALIAS)
             image_io_square_thumb = BytesIO()
             square_thumb.save(image_io_square_thumb, format="JPEG")
             self.square_thumbnail_small.save(
                 self.image_hash + '.jpg',
                 ContentFile(image_io_square_thumb.getvalue()))
             image_io_square_thumb.close()
-        #thumbnail already exists, add to photo
+        # thumbnail already exists, add to photo
         else:
-            self.square_thumbnail_small.name=os.path.join('square_thumbnails_small', self.image_hash + '.jpg').strip()
+            self.square_thumbnail_small.name = os.path.join('square_thumbnails_small', self.image_hash + '.jpg').strip()
         self.save()
 
     def _save_image_to_db(self):
@@ -210,11 +273,13 @@ class Photo(models.Model):
         if self.exif_timestamp:
             possible_old_album_date = api.models.album_date.get_album_date(
                 date=self.exif_timestamp.date(), owner=self.owner)
-            if(possible_old_album_date != None and possible_old_album_date.photos.filter(image_path=self.image_path).exists):
+            if (possible_old_album_date != None and possible_old_album_date.photos.filter(
+                    image_path=self.image_path).exists):
                 old_album_date = possible_old_album_date
         else:
             possible_old_album_date = api.models.album_date.get_album_date(date=None, owner=self.owner)
-            if(possible_old_album_date != None and possible_old_album_date.photos.filter(image_path=self.image_path).exists):
+            if (possible_old_album_date != None and possible_old_album_date.photos.filter(
+                    image_path=self.image_path).exists):
                 old_album_date = possible_old_album_date
         return old_album_date
 
@@ -236,9 +301,9 @@ class Photo(models.Model):
 
         old_album_date = self._find_album_date()
 
-        if(self.exif_timestamp != timestamp_from_exif):
+        if (self.exif_timestamp != timestamp_from_exif):
             self.exif_timestamp = timestamp_from_exif
-        
+
         if old_album_date is not None:
             old_album_date.photos.remove(self)
             old_album_date.save()
@@ -246,12 +311,13 @@ class Photo(models.Model):
         album_date = None
 
         if self.exif_timestamp:
-            album_date = api.models.album_date.get_or_create_album_date(date=self.exif_timestamp.date(), owner=self.owner)  
+            album_date = api.models.album_date.get_or_create_album_date(date=self.exif_timestamp.date(),
+                                                                        owner=self.owner)
             album_date.photos.add(self)
         else:
             album_date = api.models.album_date.get_or_create_album_date(date=None, owner=self.owner)
             album_date.photos.add(self)
-        cache.clear()     
+        cache.clear()
         album_date.save()
         self.save()
 
@@ -329,11 +395,15 @@ class Photo(models.Model):
             unknown_person.save()
         else:
             unknown_person = qs_unknown_person[0]
-        image = np.array(self.get_pil_image())
+        image = self.get_pil_image()
+        image.thumbnail(ownphotos.settings.THUMBNAIL_SIZE_BIG,
+                        PIL.Image.ANTIALIAS)
+        image = np.array(image)
 
-        face_locations = face_recognition.face_locations(image)
-        face_encodings = face_recognition.face_encodings(
-            image, known_face_locations=face_locations)
+        logger.info(f"extracting face location for image {self.image_path}")
+        face_locations = face_recognition.face_locations(image, number_of_times_to_upsample=0, model='cnn')
+        logger.info(f"extracting face encodings for image {self.image_path}")
+        face_encodings = face_recognition.face_encodings(image, known_face_locations=face_locations, model='large')
 
         if len(face_locations) > 0:
             for idx_face, face in enumerate(
@@ -359,10 +429,26 @@ class Photo(models.Model):
                 face.image.save(face.image_path,
                                 ContentFile(face_io.getvalue()))
                 face_io.close()
+
+                # fer
+                face.emotion = self._predict_facial_emotion(face.image.path)
+
                 face.save()
             logger.info('image {}: {} face(s) saved'.format(
                 self.image_hash, len(face_locations)))
-        cache.clear() 
+        cache.clear()
+
+    def _predict_facial_emotion(self, image_path):
+        try:
+            files = [
+                ('image', (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg'))
+            ]
+            response = requests.request("POST", "http://serve:5000/predict_emotion", files=files).json()
+            util.logger.info(f"generated facial emotion : {response['emotion']} for {image_path}")
+            return response['emotion']
+        except Exception as e:
+            util.logger.info(f"could not generate facial_emotion for {image_path}, exception : {str(e)}")
+            return None
 
     def _add_to_album_thing(self):
         if type(self.captions_json
@@ -371,7 +457,7 @@ class Photo(models.Model):
                 album_thing = api.models.album_thing.get_album_thing(
                     title=attribute, owner=self.owner)
                 if album_thing.photos.filter(
-                       image_hash=self.image_hash).count() == 0:
+                        image_hash=self.image_hash).count() == 0:
                     album_thing.photos.add(self)
                     album_thing.thing_type = 'places365_attribute'
                     album_thing.save()
@@ -384,10 +470,10 @@ class Photo(models.Model):
                     album_thing.photos.add(self)
                     album_thing.thing_type = 'places365_category'
                     album_thing.save()
-        cache.clear() 
+        cache.clear()
 
     def _add_to_album_date(self):
-        
+
         album_date = self._find_album_date()
         if self.geolocation_json and len(self.geolocation_json) > 0:
             util.logger.info(str(self.geolocation_json))
@@ -405,7 +491,7 @@ class Photo(models.Model):
             else:
                 album_date.location = {'places': [city_name]}
         album_date.save()
-        cache.clear() 
+        cache.clear()
 
     def _add_to_album_place(self):
         if not self.geolocation_json or len(self.geolocation_json) == 0:
@@ -422,9 +508,7 @@ class Photo(models.Model):
                     self.geolocation_json['features']) - geolocation_level
             album_place.photos.add(self)
             album_place.save()
-        cache.clear() 
+        cache.clear()
 
     def __str__(self):
         return "%s" % self.image_hash
-
-

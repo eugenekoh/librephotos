@@ -199,8 +199,12 @@ urlpatterns = [
     url(r'^api/photosedit/hide', views.SetPhotosHidden.as_view()),
     url(r'^api/photosedit/makepublic', views.SetPhotosPublic.as_view()),
     url(r'^api/photosedit/share', views.SetPhotosShared.as_view()),
-    url(r'^api/photosedit/generateim2txt',
-        views.GeneratePhotoCaption.as_view()),
+    url(r'^api/photosedit/generateim2txt',views.GeneratePhotoCaption.as_view()),
+
+    url(r'^api/generatepic', views.GeneratePersonalityPhotoCaption.as_view()),
+    url(r'^api/generatebbimage', views.GenerateBoundingBoxImage.as_view()),
+    url(r'^api/reset', views.Reset.as_view()),
+
     url(r'^api/useralbum/share', views.SetUserAlbumShared.as_view()),
     url(r'^api/facetolabel', views.FaceToLabelView.as_view()),
     url(r'^api/trainfaces', views.TrainFaceView.as_view()),

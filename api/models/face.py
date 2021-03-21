@@ -25,5 +25,7 @@ class Face(models.Model):
 
     encoding = models.TextField()
 
+    emotion = models.TextField()
+
     def __str__(self):
         return "%d" % self.id

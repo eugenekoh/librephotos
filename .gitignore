@@ -167,3 +167,5 @@ api/places365/*.tar.gz
 *.db
 media*
 protected_media
+.idea/*
+.vscode/*
