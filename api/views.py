@@ -1167,7 +1167,7 @@ class GeneratePhotoCaption(APIView):
                 status_code=400)
         cache.clear()
         res = photo._generate_captions_im2txt()
-        return Response({'status': res})
+        return Response(res)
 
 
 class SetPhotosShared(APIView):
@@ -1838,7 +1838,7 @@ class Reset(APIView):
         images = list(Path('/protected_media').glob('**/*.jpg'))
         for image in images:
             image.unlink()
-        logger.info(f"removed {len(image)} images")
+        logger.info(f"removed {len(images)} images")
         cache.clear()
 
         return Response({'status': True})

@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from io import BytesIO
 
+import bbox_visualizer as bbv
 import PIL
 import cv2
 import exifread
@@ -83,16 +84,14 @@ class Photo(models.Model):
         self.image_hash = hash_md5.hexdigest() + str(self.owner.id)
         self.save()
 
-    def _generate_personality_captions(self, personality, search=False):
+    def _generate_personality_captions(self, personality):
         image_path = self.thumbnail_big.path
         try:
             payload = {'personality': personality}
             files = [
                 ('image', (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg'))
             ]
-            response = requests.request("POST", "http://serve:5000/generate_caption", data=payload, files=files).json()
-            if search:
-                self.search_captions += ' ' + response['caption']
+            response = requests.request("POST", "http://serve:5000/generate_pic", data=payload, files=files).json()
             self.captions_json['pic'] = response
             self.save()
             util.logger.info(f"generated {personality} caption : {response['caption']} for {image_path}")
@@ -109,15 +108,11 @@ class Photo(models.Model):
                 # Draw a box around the face
                 left = face.location_left
                 right = face.location_right
-                top = face.location_top
                 bottom = face.location_bottom
-
-                cv2.rectangle(image, (left, top), (right, bottom), (0, 0, 255), 5)
-
-                # Draw a label with a name below the face
-                #cv2.rectangle(image, (left, top + 80), (right, top), (0, 0, 255), cv2.FILLED)
-                font = cv2.FONT_HERSHEY_DUPLEX
-                cv2.putText(image, f"{face.person.name}-{face.emotion}", (left + 6, top-30), font, 2.0, (255, 255, 255), 5)
+                top = face.location_top
+                bbox = [left, top, right, bottom]
+                cv2.rectangle(image, (left, top), (right, bottom), (255, 255, 255), 5)
+                bbv.add_T_label(image, f"{face.person.name}-{face.emotion}", bbox)
 
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             im_pil = PIL.Image.fromarray(image)
@@ -141,25 +136,19 @@ class Photo(models.Model):
 
     def _generate_captions_im2txt(self):
         image_path = self.thumbnail_big.path
-        captions = self.captions_json
-        search_captions = self.search_captions
         try:
-            caption = im2txt(image_path)
-            caption = caption.replace("<start>",
-                                      '').replace("<end>", '').strip().lower()
-            captions['im2txt'] = caption
-            self.captions_json = captions
-            # todo: handle duplicate captions
-            self.search_captions = search_captions + caption
+            files = [
+                ('image', (os.path.basename(image_path), open(image_path, 'rb'), 'image/jpeg'))
+            ]
+            response = requests.request("POST", "http://serve:5000/generate_sic", files=files).json()
+            self.captions_json['im2txt'] = self.captions_json['pic'] = response
+            self.search_captions = f"{self.search_captions}, {response['caption']}"
             self.save()
-            util.logger.info(
-                'generated im2txt captions for image %s. caption: %s' %
-                (image_path, caption))
-            return True
-        except:
-            util.logger.warning(
-                'could not generate im2txt captions for image %s' % image_path)
-            return False
+            util.logger.info(f"generated im2txt caption : {response['caption']} for {image_path}")
+            return response
+        except Exception as e:
+            util.logger.info(f"could not generate  caption for {image_path}, exception : {str(e)}")
+            return None
 
     def _generate_captions(self):
         image_path = self.thumbnail_big.path
