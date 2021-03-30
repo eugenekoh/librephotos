@@ -110,7 +110,7 @@ def handle_new_image(user, image_path, job_id):
 
                 photo._generate_thumbnail()
                 photo._generate_captions()
-                photo._generate_personality_captions("Descriptive", search=True)
+                photo._generate_captions_im2txt()
                 photo._extract_date_time_from_exif()
                 photo._extract_gps_from_exif()
                 photo._geolocate_mapbox()
