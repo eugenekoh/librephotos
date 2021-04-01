@@ -24,7 +24,7 @@ def get_or_create_person(name):
         return new_person
 
 def get_face_encoding(face):
-    return np.frombuffer(bytes.fromhex(face.encoding))
+    return np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
 
 def nuke_people():
     for person in Person.objects.filter(name__startswith='Person'):
@@ -33,7 +33,7 @@ def nuke_people():
 
 
 faces = list(Face.objects.all())
-face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding)) for f in faces])
+face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding), dtype=np.float32) for f in faces])
 
 num_groups = []
 for _ in tqdm(range(50)):
@@ -63,7 +63,7 @@ num_people = int(np.mean(num_groups))
 
 if False:
     faces = Face.objects.all()
-    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding)) for f in faces])
+    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding), dtype=np.float32) for f in faces])
 
 
     # Linkage clustering
@@ -78,7 +78,7 @@ if False:
 if True:
     nuke_people()
     faces = list(Face.objects.all())
-    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding)) for f in faces])
+    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding), dtype=np.float32) for f in faces])
     X = StandardScaler().fit_transform(face_encodings)
 
     bandwidth = estimate_bandwidth(X, quantile=0.1, n_samples=500)
@@ -91,7 +91,7 @@ if True:
 if False:
     nuke_people()
     faces = list(Face.objects.all())
-    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding)) for f in faces])
+    face_encodings = np.array([np.frombuffer(bytes.fromhex(f.encoding), dtype=np.float32) for f in faces])
     X = StandardScaler().fit_transform(face_encodings)
 
     # #############################################################################

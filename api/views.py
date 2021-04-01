@@ -2,13 +2,14 @@ import datetime
 import uuid
 from pathlib import Path
 
-from django.core.cache import cache
-import ownphotos.settings
+import numpy as np
 import django_rq
 import six
+import torch
 from constance import config as site_config
 from django.core.cache import cache
-from django.db.models import Count, F, Prefetch, Q
+from django.db import connection
+from django.db.models import Count, Prefetch, Q
 from django.http import HttpResponse, HttpResponseForbidden
 from django.utils.encoding import force_text
 from rest_framework import filters, viewsets
@@ -21,17 +22,16 @@ from rest_framework_extensions.key_constructor.bits import (
     KeyBitBase, ListSqlQueryKeyBit, PaginationKeyBit, RetrieveSqlQueryKeyBit)
 from rest_framework_extensions.key_constructor.constructors import \
     DefaultKeyConstructor
-
-from django.db import connection
+from api.models.photo import model
+import ownphotos.settings
 from api import util
-from api.face_classify import train_faces, cluster_faces
-from api.social_graph import build_social_graph
-from api.autoalbum import generate_event_albums, regenerate_event_titles
 from api.api_util import (get_count_stats, get_search_term_examples,
                           path_to_dict, get_location_clusters, get_location_sunburst, get_searchterms_wordcloud,
                           get_location_timeline, get_photo_month_counts)
+from api.autoalbum import generate_event_albums, regenerate_event_titles
 from api.directory_watcher import scan_photos
 from api.drf_optimize import OptimizeRelatedModelViewSetMetaclass
+from api.face_classify import train_faces, cluster_faces
 from api.models import (AlbumAuto, AlbumDate, AlbumPlace, AlbumThing,
                         AlbumUser, Face, LongRunningJob, Person, Photo, User)
 from api.models.person import get_or_create_person
@@ -59,8 +59,10 @@ from api.serializers_serpy import \
     PhotoSuperSimpleSerializer as PhotoSuperSimpleSerializerSerpy
 from api.serializers_serpy import \
     SharedPhotoSuperSimpleSerializer as SharedPhotoSuperSimpleSerializerSerpy
+from api.social_graph import build_social_graph
 from api.util import logger
 
+import sentence_transformers
 CACHE_TTL = 60 * 60 * 24  # 1 day
 CACHE_TTL_VIZ = 60 * 60  # 1 hour
 
@@ -208,10 +210,29 @@ class PhotoSimpleListViewSet(viewsets.ModelViewSet):
         return super(PhotoSimpleListViewSet, self).list(*args, **kwargs)
 
 
+class ModSearchFilter(filters.SearchFilter):
+    def filter_queryset(self, request, queryset, view):
+        keyword_results = super().filter_queryset(request, queryset, view)
+        search_terms = request.query_params.get(self.search_param, '')
+        search_encoding = model.encode(search_terms, convert_to_tensor=True)
+
+        scores = []
+
+        for photo in Photo.objects.all():
+            text_encoding = torch.from_numpy(np.frombuffer(bytes.fromhex(photo.text_encoding), dtype=np.float32))
+            cosine_score = sentence_transformers.util.pytorch_cos_sim(search_encoding, text_encoding)
+            scores.append((cosine_score, photo.image_hash))
+        scores.sort(reverse=True, key=lambda x: x[0])
+        relevant_hashes = [x[-1] for x in scores[:5]]
+        relevant_photos = Photo.objects.filter(image_hash__in=relevant_hashes)
+        logger.info(f"photos {relevant_photos}")
+
+        return keyword_results.union(relevant_photos)
+
 class PhotoSuperSimpleSearchListViewSet(viewsets.ModelViewSet):
     serializer_class = PhotoSuperSimpleSerializer
     pagination_class = HugeResultsSetPagination
-    filter_backends = (filters.SearchFilter,)
+    filter_backends = (ModSearchFilter,)
     search_fields = ([
         'search_captions', 'search_location', 'faces__person__name',
         'exif_timestamp', 'image_path'
@@ -1434,14 +1455,14 @@ class FaceToLabelView(APIView):
 
         labeled_face_encodings = []
         for face in labeled_faces:
-            face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
+            face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
             labeled_face_encodings.append(face_encoding)
         labeled_face_encodings = np.array(labeled_face_encodings)
         labeled_faces_mean = labeled_face_encodings.mean(0)
 
         distances_to_labeled_faces_mean = []
         for face in unlabeled_faces:
-            face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
+            face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
             distance = np.linalg.norm(labeled_faces_mean - face_encoding)
             distances_to_labeled_faces_mean.append(distance)
 
@@ -1632,8 +1653,6 @@ class RQJobStatView(APIView):
         is_job_finished = django_rq.get_queue().fetch_job(job_id).is_finished
         return Response({'status': True, 'finished': is_job_finished})
 
-
-import time
 
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import AccessToken

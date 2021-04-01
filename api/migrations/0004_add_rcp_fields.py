@@ -16,5 +16,10 @@ class Migration(migrations.Migration):
             model_name='Photo',
             name='bounding_box_image',
             field=models.ImageField(upload_to='bounding_box_images')
+        ),
+        migrations.AddField(
+            model_name='Photo',
+            name='text_encoding',
+            field=models.TextField(default=None, null=True)
         )
     ]

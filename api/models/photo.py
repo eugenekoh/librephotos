@@ -3,8 +3,8 @@ import os
 from datetime import datetime
 from io import BytesIO
 
-import bbox_visualizer as bbv
 import PIL
+import bbox_visualizer as bbv
 import cv2
 import exifread
 import face_recognition
@@ -19,6 +19,7 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import models
 from geopy.geocoders import Nominatim
+from sentence_transformers import SentenceTransformer
 
 import api.models
 import api.util as util
@@ -28,6 +29,8 @@ from api.im2vec import Im2Vec
 from api.models.user import User, get_deleted_user
 from api.places365.places365 import inference_places365
 from api.util import logger
+
+model = SentenceTransformer("stsb-distilbert-base")
 
 
 class VisiblePhotoManager(models.Manager):
@@ -72,6 +75,7 @@ class Photo(models.Model):
 
     public = models.BooleanField(default=False, db_index=True)
     encoding = models.TextField(default=None, null=True)
+    text_encoding = models.TextField(default=None, null=True)
 
     objects = models.Manager()
     visible = VisiblePhotoManager()
@@ -117,7 +121,7 @@ class Photo(models.Model):
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             im_pil = PIL.Image.fromarray(image)
             im_pil.thumbnail(ownphotos.settings.THUMBNAIL_SIZE_BIG,
-                            PIL.Image.ANTIALIAS)
+                             PIL.Image.ANTIALIAS)
             buffer = BytesIO()
             im_pil.save(buffer, format="JPEG")
             self.bounding_box_image.delete()
@@ -143,11 +147,14 @@ class Photo(models.Model):
             response = requests.request("POST", "http://serve:5000/generate_sic", files=files).json()
             self.captions_json['im2txt'] = self.captions_json['pic'] = response
             self.search_captions = f"{self.search_captions}, {response['caption']}"
+            logger.info('generating text encodings')
+            text_encoding = model.encode(response['caption'])
+            self.text_encoding = text_encoding.tobytes().hex()
             self.save()
             util.logger.info(f"generated im2txt caption : {response['caption']} for {image_path}")
             return response
         except Exception as e:
-            util.logger.info(f"could not generate  caption for {image_path}, exception : {str(e)}")
+            util.logger.info(f"could not generate caption for {image_path}, exception : {str(e)}")
             return None
 
     def _generate_captions(self):

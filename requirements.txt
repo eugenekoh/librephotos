@@ -41,3 +41,4 @@ gevent==20.9.0
 python-magic==0.4.18
 opencv-python
 bbox-visualizer
+sentence-transformers
