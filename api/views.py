@@ -1455,14 +1455,14 @@ class FaceToLabelView(APIView):
 
         labeled_face_encodings = []
         for face in labeled_faces:
-            face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
+            face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
             labeled_face_encodings.append(face_encoding)
         labeled_face_encodings = np.array(labeled_face_encodings)
         labeled_faces_mean = labeled_face_encodings.mean(0)
 
         distances_to_labeled_faces_mean = []
         for face in unlabeled_faces:
-            face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
+            face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
             distance = np.linalg.norm(labeled_faces_mean - face_encoding)
             distances_to_labeled_faces_mean.append(distance)
 

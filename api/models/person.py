@@ -24,7 +24,7 @@ class Person(models.Model):
         encodings = []
         logger.info(faces)
         for face in faces:
-            encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
+            encoding = np.frombuffer(bytes.fromhex(face.encoding))
             encodings.append(encoding)
         mean_encoding = np.array(encodings).mean(axis=0)
         self.mean_face_encoding = mean_encoding.tobytes().hex()

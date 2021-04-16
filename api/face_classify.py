@@ -26,7 +26,7 @@ def cluster_faces(user):
     faces = Face.objects.filter(photo__owner=user)
     face_encodings_all = []
     for face in faces:
-        face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32 )
+        face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
         face_encodings_all.append(face_encoding)
 
     pca = PCA(n_components=3)
@@ -70,12 +70,11 @@ def train_faces(user, job_id):
         persons_list = []
         person_face_encodings = []
         for person in persons:
-            face_encoding = np.frombuffer(bytes.fromhex(person.mean_face_encoding), dtype=np.float32 )
+            face_encoding = np.frombuffer(bytes.fromhex(person.mean_face_encoding))
             person_face_encodings.append(face_encoding)
             persons_list.append(person)
         faces = Face.objects.filter(
             photo__owner=user).prefetch_related('person')
-
         if len(persons) == 0:
             logger.info("No labeled faces found")
             lrj.finished = True
@@ -87,10 +86,11 @@ def train_faces(user, job_id):
         target_count = len(faces)
         for idx, face in enumerate(faces):
             if face.person_label_is_inferred in [True, None]:
-                face_encoding = np.frombuffer(bytes.fromhex(face.encoding), dtype=np.float32)
+                face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
                 results = face_recognition.face_distance(person_face_encodings, face_encoding)
-                TOLERANCE = 0.5
+                TOLERANCE = 0.35
                 person_idx = np.argmin(results)
+                logger.info(f"{face.image_path}, {idx}/{len(faces)}, cosine: {results[person_idx]}")
                 if results[person_idx] <= TOLERANCE:
                     person = Person.objects.get(name=persons_list[person_idx].name)
                     logger.info(person.name)
