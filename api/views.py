@@ -2,6 +2,10 @@ import datetime
 import uuid
 from pathlib import Path
 
+import operator
+from functools import reduce
+from django.db import models
+
 import numpy as np
 import django_rq
 import six
@@ -215,7 +219,6 @@ class ModSearchFilter(filters.SearchFilter):
         keyword_results = super().filter_queryset(request, queryset, view)
         search_terms = request.query_params.get(self.search_param, '')
         search_encoding = model.encode(search_terms, convert_to_tensor=True)
-
         scores = []
 
         for photo in Photo.objects.all():
@@ -229,10 +232,55 @@ class ModSearchFilter(filters.SearchFilter):
 
         return keyword_results.union(relevant_photos)
 
+class ModSearchFilterV2(filters.SearchFilter):
+    def filter_queryset(self, request, queryset, view):
+        text = request.query_params.get('text', '')
+        emotion = request.query_params.get('emotion', '')
+        persons = [ x for x in request.query_params.get('person', '').split(',') if x]
+        logger.info(f'request:{request.query_params}, text:{text}, emotion:{emotion}, person:{persons}')
+
+        if text:
+            # text embedding search
+            THRESHOLD = 0.4
+            search_encoding = model.encode(text, convert_to_tensor=True)
+
+            scores = []
+            for photo in Photo.objects.all():
+                text_encoding = torch.from_numpy(np.frombuffer(bytes.fromhex(photo.text_encoding), dtype=np.float32))
+                cosine_score = sentence_transformers.util.pytorch_cos_sim(search_encoding, text_encoding)
+                scores.append((cosine_score, photo.image_hash))
+            relevant_hashes = [x[-1] for x in scores if x[0] >= THRESHOLD]
+            relevant_photos = Photo.objects.filter(image_hash__in=relevant_hashes)
+            logger.info(f"text photos length : {len(relevant_photos)}")
+            queryset = queryset.intersection(relevant_photos)
+
+        if emotion:
+            view.search_fields = ['faces__emotion']
+            self.search_param = 'emotion'
+            queryset = super().filter_queryset(request, queryset, view)
+            logger.info(f"emotion queryset length: {len(queryset)}")
+
+        if persons:
+            hashes = []
+            for photo in queryset:
+                faces = Face.objects.filter(photo=photo)
+                count = 0
+                for face in faces:
+                    if face.person.name in persons:
+                        count += 1
+                    if emotion and face.emotion != emotion:
+                        count -= 1
+                if count == len(persons):
+                    hashes.append(photo.image_hash)
+            relevant_photos = Photo.objects.filter(image_hash__in=hashes)
+            queryset = queryset.intersection(relevant_photos)
+        logger.info(f"persons queryset length: {len(queryset)}")
+        return queryset
+
 class PhotoSuperSimpleSearchListViewSet(viewsets.ModelViewSet):
     serializer_class = PhotoSuperSimpleSerializer
     pagination_class = HugeResultsSetPagination
-    filter_backends = (ModSearchFilter,)
+    filter_backends = (ModSearchFilterV2,)
     search_fields = ([
         'search_captions', 'search_location', 'faces__person__name',
         'exif_timestamp', 'image_path'
@@ -1788,7 +1836,7 @@ class MediaAccessFullsizeOriginalView(APIView):
             if photo.image_path.startswith('/nextcloud_media/'):
                 internal_path = photo.image_path.replace('/nextcloud_media/', '/nextcloud_original/')
                 internal_path = '/nextcloud_original' + photo.image_path[21:]
-            if photo.image_path.startswith('/data/'):
+            if photo.image_path.startswith('/pictures/'):
                 internal_path = '/original' + photo.image_path[5:]
 
             # grant access if the requested photo is public

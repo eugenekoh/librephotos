@@ -72,7 +72,7 @@ CONSTANCE_DATABASE_CACHE_BACKEND = 'default'
 
 CONSTANCE_CONFIG = {
     'ALLOW_REGISTRATION': (False, 'Publicly allow user registration', bool),
-    'IMAGE_DIRS': ("/data", 'Image dirs list (serialized json)', str)
+    'IMAGE_DIRS': ("/pictures", 'Image dirs list (serialized json)', str)
 }
 
 INTERNAL_IPS = ('127.0.0.1', 'localhost', '192.168.1.100')
@@ -249,7 +249,7 @@ STATIC_URL = '/static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DATA,  'protected_media' )
 STATIC_ROOT = os.path.join(BASE_DIR,  'static')
-DATA_ROOT = os.path.join(BASE_DATA,  'data' )
+DATA_ROOT = os.path.join(BASE_DATA,  'pictures' )
 IM2TXT_ROOT = os.path.join(BASE_DATA,  'data_models', 'im2txt')
 PLACES365_ROOT = os.path.join(BASE_DATA,  'data_models', 'places365', 'model' )
 LOGS_ROOT = BASE_LOGS
