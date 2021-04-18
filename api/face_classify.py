@@ -1,16 +1,18 @@
-import face_recognition
-from api.models import Face, Person, LongRunningJob
-from api.util import logger
-
-from sklearn.decomposition import PCA
-import numpy as np
-from sklearn.neural_network import MLPClassifier
-from django.core.cache import cache
-import seaborn as sns
-from django_rq import job
-import pytz
-
 import datetime
+from pathlib import Path
+
+import numpy as np
+import pytz
+import seaborn as sns
+from django.core.cache import cache
+from django.db import connection
+from django_rq import job
+from sklearn import svm
+from sklearn.decomposition import PCA
+
+from api.distance import findEuclideanDistance
+from api.models import Face, Person, LongRunningJob, Photo
+from api.util import logger
 
 
 def cluster_faces(user):
@@ -50,6 +52,20 @@ def cluster_faces(user):
     return res
 
 
+def findEuclideanDistance(source_representation, test_representation):
+    source_representation = l2_normalize(source_representation)
+    test_representation = l2_normalize(test_representation)
+
+    euclidean_distance = source_representation - test_representation
+    euclidean_distance = np.sum(np.multiply(euclidean_distance, euclidean_distance))
+    euclidean_distance = np.sqrt(euclidean_distance)
+    return euclidean_distance
+
+
+def l2_normalize(x):
+    return x / np.sqrt(np.sum(np.multiply(x, x)))
+
+
 @job
 def train_faces(user, job_id):
     if LongRunningJob.objects.filter(job_id=job_id).exists():
@@ -85,9 +101,10 @@ def train_faces(user, job_id):
 
         target_count = len(faces)
         for idx, face in enumerate(faces):
-            if face.person_label_is_inferred in [True, None]:
+            if face.person_label_is_inferred in [True, None] or face.person.name == 'unknown':
                 face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
-                results = face_recognition.face_distance(person_face_encodings, face_encoding)
+                # results = face_recognition.face_distance(person_face_encodings, face_encoding)
+                results = [findEuclideanDistance(x, face_encoding) for x in person_face_encodings]
                 TOLERANCE = 0.35
                 person_idx = np.argmin(results)
                 logger.info(f"{face.image_path}, {idx}/{len(faces)}, cosine: {results[person_idx]}")
@@ -131,6 +148,99 @@ def train_faces(user, job_id):
         return False
 
     return res
+
+
+@job
+def train_faces_svm(user, job_id):
+    if LongRunningJob.objects.filter(job_id=job_id).exists():
+        lrj = LongRunningJob.objects.get(job_id=job_id)
+        lrj.started_at = datetime.datetime.now().replace(tzinfo=pytz.utc)
+        lrj.save()
+    else:
+        lrj = LongRunningJob.objects.create(
+            started_by=user,
+            job_id=job_id,
+            queued_at=datetime.datetime.now().replace(tzinfo=pytz.utc),
+            started_at=datetime.datetime.now().replace(tzinfo=pytz.utc),
+            job_type=LongRunningJob.JOB_TRAIN_FACES)
+        lrj.save()
+
+    try:
+        encodings = []
+        persons = []
+        faces = Face.objects.filter(photo__owner=user).prefetch_related('person')
+        # get the faces
+        for idx, face in enumerate(faces):
+            if face.person_label_is_inferred is False and face.person.name != 'unknown':
+                face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
+                encodings.append(face_encoding)
+                persons.append(face.person.name)
+        logger.info(persons)
+        if len(persons) == 0:
+            logger.info("No labeled faces found")
+            lrj.finished = True
+            lrj.failed = False
+            lrj.finished_at = datetime.datetime.now().replace(tzinfo=pytz.utc)
+            lrj.save()
+            return True
+
+        logger.info("running svm classification")
+        clf = svm.SVC(gamma="scale")
+        clf.fit(encodings, persons)
+
+        target_count = len(faces)
+        for idx, face in enumerate(faces):
+            if face.person_label_is_inferred in [True, None] or face.person.name == 'unknown':
+                face_encoding = np.frombuffer(bytes.fromhex(face.encoding))
+                name = clf.predict([face_encoding])
+                person = Person.objects.get(name=name[0])
+                face.person = person
+                face.person_label_is_inferred = True
+                face.save()
+
+            lrj.result = {
+                'progress': {
+                    "current": idx + 1,
+                    "target": target_count
+                }
+            }
+            lrj.save()
+
+        lrj.finished = True
+        lrj.failed = False
+        lrj.finished_at = datetime.datetime.now().replace(tzinfo=pytz.utc)
+        lrj.save()
+        cache.clear()
+        return True
+
+    except BaseException:
+        logger.exception("An error occured")
+        res = []
+
+        lrj.failed = True
+        lrj.finished = True
+        lrj.finished_at = datetime.datetime.now().replace(tzinfo=pytz.utc)
+        lrj.save()
+        return False
+
+    return res
+
+
+def reset_faces():
+    logger.info('deleteing faces')
+    cursor = connection.cursor()
+    cursor.execute("TRUNCATE api_face")
+    images = list(Path('/protected_media/faces').glob('**/*.jpg'))
+    for image in images:
+        image.unlink()
+    logger.info(f"removed {len(images)} images")
+    cache.clear()
+
+    logger.info('processing photos')
+    for i, photo in enumerate(Photo.objects.all()):
+        photo._extract_faces()
+        logger.info(f'finish extracting faces, {i}')
+        photo.save()
 
 
 if __name__ == "__main__":

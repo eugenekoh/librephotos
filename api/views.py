@@ -2,10 +2,6 @@ import datetime
 import uuid
 from pathlib import Path
 
-import operator
-from functools import reduce
-from django.db import models
-
 import numpy as np
 import django_rq
 import six
@@ -35,7 +31,7 @@ from api.api_util import (get_count_stats, get_search_term_examples,
 from api.autoalbum import generate_event_albums, regenerate_event_titles
 from api.directory_watcher import scan_photos
 from api.drf_optimize import OptimizeRelatedModelViewSetMetaclass
-from api.face_classify import train_faces, cluster_faces
+from api.face_classify import train_faces, cluster_faces, train_faces_svm
 from api.models import (AlbumAuto, AlbumDate, AlbumPlace, AlbumThing,
                         AlbumUser, Face, LongRunningJob, Person, Photo, User)
 from api.models.person import get_or_create_person

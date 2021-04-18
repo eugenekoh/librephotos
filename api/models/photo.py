@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 from datetime import datetime
 from io import BytesIO
@@ -19,11 +20,13 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.db import models
 from geopy.geocoders import Nominatim
+from mtcnn import MTCNN
 from sentence_transformers import SentenceTransformer
 
 import api.models
 import api.util as util
 import ownphotos.settings
+from api.distance import findEuclideanDistance
 from api.exifreader import rotate_image
 from api.im2vec import Im2Vec
 from api.models.user import User, get_deleted_user
@@ -31,6 +34,7 @@ from api.places365.places365 import inference_places365
 from api.util import logger
 
 model = SentenceTransformer("stsb-distilbert-base")
+face_detector = MTCNN()
 
 
 class VisiblePhotoManager(models.Manager):
@@ -392,24 +396,41 @@ class Photo(models.Model):
         else:
             unknown_person = qs_unknown_person[0]
         image = self.get_pil_image()
-        image.thumbnail(ownphotos.settings.THUMBNAIL_SIZE_BIG,
-                        PIL.Image.ANTIALIAS)
         image = np.array(image)
 
-        logger.info(f"extracting face location for image {self.image_path}")
-        face_locations = face_recognition.face_locations(image, number_of_times_to_upsample=0, model='cnn')
-        logger.info(f"extracting face encodings for image {self.image_path}")
-        face_encodings = face_recognition.face_encodings(image, known_face_locations=face_locations, model='large')
+        def get_tuples(results):
+            faces = []
+            for r in results:
+                THRESHOLD = 0.95
+                if r['confidence'] >= THRESHOLD:
+                    f = r['box']
+                    top = f[1]
+                    left = f[0]
+                    bottom = top + f[3]
+                    right = left + f[2]
+                    faces.append((top, right, bottom, left))
+            return faces
+
+        # face_locations = face_recognition.face_locations(image, number_of_times_to_upsample=0, model='cnn')
+        face_locations = get_tuples(face_detector.detect_faces(image))
+        logger.info(f"extracted face location for image {self.image_path}, {face_locations}")
+
 
         if len(face_locations) > 0:
+            face_encodings = face_recognition.face_encodings(image, known_face_locations=face_locations, model='large')
+            logger.info(f"extracted face encodings for image {self.image_path}, {[x.shape for x in face_encodings]}")
+
             for idx_face, face in enumerate(
                     zip(face_encodings, face_locations)):
                 face_encoding = face[0]
                 face_location = face[1]
                 top, right, bottom, left = face_location
                 face_image = image[top:bottom, left:right]
-                face_image = PIL.Image.fromarray(face_image)
-
+                try:
+                    face_image = PIL.Image.fromarray(face_image)
+                except Exception as e:
+                    logger.exception(e)
+                    continue
                 face = api.models.face.Face()
                 face.image_path = self.image_hash + "_" + str(
                     idx_face) + '.jpg'
@@ -508,3 +529,4 @@ class Photo(models.Model):
 
     def __str__(self):
         return "%s" % self.image_hash
+
